@@ -94,6 +94,7 @@ class TORCH_API ProcessGroupXCCL : public Backend {
     std::shared_ptr<at::xpu::XPUEvent> xcclEndEvent_;
     bool isBarrierOp_{false};
     bool blockingWait_{false};
+    bool isCoalescedWork_{false};
     std::chrono::time_point<std::chrono::steady_clock> workStartTime_;
     uint64_t seq_;
     bool isP2P_;

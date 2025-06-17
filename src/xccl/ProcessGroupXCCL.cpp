@@ -263,6 +263,13 @@ bool ProcessGroupXCCL::WorkXCCL::isCompleted() {
   if (xcclEndEvent_ && xcclEndEvent_->query()) {
     return true;
   }
+  
+  if (isCoalescedWork_) {
+    if (future_ && future_->completed()) {
+      return true;
+    }
+  }
+  
   return false;
 }
 
@@ -607,6 +614,7 @@ c10::intrusive_ptr<Work> ProcessGroupXCCL::collective(
       initWork(device, rank_, opType, false, profilingTitle, inputs, outputs);
 
   work->outputs_ = std::make_shared<std::vector<at::Tensor>>(outputs);
+  work->isCoalescedWork_ = (coalescing_state_ & CoalActive) != 0;
 
   if (asyncOp) {
     if (coalescing_state_) {
@@ -628,7 +636,7 @@ c10::intrusive_ptr<Work> ProcessGroupXCCL::collective(
 
   post(stream, work);
 
-  if (!coalescing_state_) {
+  if (!coalescing_state_ || asyncOp) {
     work->xcclEndEvent_->record(stream);
   }
 
