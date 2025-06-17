@@ -200,6 +200,8 @@ void syncStream(
 } // namespace
 
 constexpr int64_t kSynchronizeBusyWaitMillis = 10;
+constexpr int64_t kMaxBackoffWaitMillis = 100;
+constexpr double kAllreduceTimeoutMultiplier = 2.0;
 thread_local uint64_t ProcessGroupXCCL::xcclActiveGroupCounter_ = 0;
 
 void TensorShelf::stash(std::vector<at::Tensor>& tensors) {
@@ -280,19 +282,39 @@ bool ProcessGroupXCCL::WorkXCCL::wait(std::chrono::milliseconds timeout) {
   synchronize();
 
   if (blockingWait_ || timeout != kNoTimeout) {
+    auto adjustedTimeout = timeout;
+    if (opType_ == OpType::ALLREDUCE) {
+      adjustedTimeout = std::chrono::milliseconds(
+          static_cast<int64_t>(timeout.count() * kAllreduceTimeoutMultiplier));
+      LOG(INFO) << "Adjusted timeout for ALLREDUCE operation from " 
+                << timeout.count() << "ms to " << adjustedTimeout.count() << "ms";
+    }
+    
+    LOG(INFO) << "Starting wait for operation type " << static_cast<int>(opType_) 
+              << " on device " << device_.index() << " with timeout " 
+              << adjustedTimeout.count() << "ms";
+    
+    int64_t currentWaitInterval = kSynchronizeBusyWaitMillis;
+    
     while (!isCompleted()) {
       auto currentTimepoint = std::chrono::steady_clock::now();
       auto timeElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
           currentTimepoint - workStartTime_);
-      if (timeElapsed >= timeout) {
+      if (timeElapsed >= adjustedTimeout) {
         std::string exceptionMsg = c10::str(
-            "Work ran time out after ", timeElapsed.count(), " milliseconds.");
+            "Work ran time out after ", timeElapsed.count(), " milliseconds. ",
+            "Operation type: ", static_cast<int>(opType_), 
+            ", Device index: ", device_.index(),
+            ", Original timeout: ", timeout.count(), "ms",
+            ", Adjusted timeout: ", adjustedTimeout.count(), "ms");
         LOG(ERROR) << exceptionMsg;
         // todo: abort comm and exit
         TORCH_CHECK(false, exceptionMsg)
       }
-      std::this_thread::sleep_for(
-          std::chrono::milliseconds(kSynchronizeBusyWaitMillis));
+      
+      std::this_thread::sleep_for(std::chrono::milliseconds(currentWaitInterval));
+      
+      currentWaitInterval = std::min(currentWaitInterval * 2, kMaxBackoffWaitMillis);
     }
   } else if (isBarrierOp_ && !isCompleted()) {
     auto currentStream = at::xpu::getCurrentXPUStream(device_.index());
